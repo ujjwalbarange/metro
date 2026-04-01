@@ -1,0 +1,5 @@
+maptilerAPI.txt
+*.log
+.DS_Store
+metro_prototype/build/
+.dart_tool/

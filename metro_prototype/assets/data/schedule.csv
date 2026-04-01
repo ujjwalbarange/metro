@@ -1,0 +1,6 @@
+station_name,latitude,longitude,arrival_time
+Station A,21.1458,79.0882,10:00
+Station B,21.1480,79.0885,10:02
+Station C,21.1500,79.0890,10:04
+Station D,21.1520,79.0885,10:06
+Station E,21.1540,79.0880,10:08

@@ -1,0 +1,9 @@
+Analyzing metro_prototype...                                    
+
+   info - The imported package 'web' isn't a dependency of the importing package - lib\main.dart:4:8 - depend_on_referenced_packages
+  error - The getter 'style' isn't defined for the type 'Element' - lib\main.dart:13:14 - undefined_getter
+  error - The getter 'style' isn't defined for the type 'Element' - lib\main.dart:14:14 - undefined_getter
+  error - The method 'getProperty' isn't defined for the type 'Window' - lib\main.dart:56:33 - undefined_method
+  error - The name 'MyApp' isn't a class - test\widget_test.dart:16:35 - creation_with_non_type
+
+5 issues found. (ran in 4.0s)

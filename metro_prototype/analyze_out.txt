@@ -1,0 +1,13 @@
+Resolving dependencies...
+Downloading packages...
+  meta 1.17.0 (1.18.2 available)
+  test_api 0.7.10 (0.7.11 available)
+  vector_math 2.2.0 (2.3.0 available)
+Got dependencies!
+3 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+Analyzing metro_prototype...                                    
+
+  error - The argument type 'LineString' can't be assigned to the parameter type 'Feature<LineString>'.  - lib\map_screen.dart:59:59 - argument_type_not_assignable
+  error - The argument type 'LineString' can't be assigned to the parameter type 'Feature<LineString>'.  - lib\map_screen.dart:98:34 - argument_type_not_assignable
+
