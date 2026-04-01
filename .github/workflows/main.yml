@@ -1,0 +1,30 @@
+name: Build Android APK
+on:
+  workflow_dispatch: 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    # This tells GitHub to run all following commands inside your specific folder
+    defaults:
+      run:
+        working-directory: ./metro_prototype
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - run: flutter pub get
+      
+      - run: flutter build apk --release
+      
+      # We also have to update the artifact path to include the folder name
+      - uses: actions/upload-artifact@v3
+        with:
+          name: release-apk
+          path: metro_prototype/build/app/outputs/flutter-apk/app-release.apk
+          
