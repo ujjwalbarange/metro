@@ -138,7 +138,7 @@ function getCurrentHeadwaySec() {
 // Compute seconds since service start (06:00) for today
 function getServiceElapsedSec() {
   const now = new Date();
-  return (now.getHours() - 6) * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  return (now.getHours() - 6) * 3600 + now.getMinutes() * 60 + now.getSeconds() + now.getMilliseconds() / 1000;
 }
 
 // Get departure times for all rakes considering variable headway
@@ -228,7 +228,7 @@ function resolvePositionInTrip(tripTimeSec, nodes, reversed) {
 }
 
 // Convert a station-based fraction to map lng/lat using snapped route fractions
-function fractionToMapPos(lineName, fraction) {
+function fractionToMapPos(lineName, fraction, trainDirection) {
   const ld = lineData[lineName];
   if (!ld || !ld.stationFracs || ld.stationFracs.length < 2) return null;
 
@@ -244,10 +244,21 @@ function fractionToMapPos(lineName, fraction) {
 
   const pt = turf.along(ld.routeLine, dist, { units: "meters" });
   const coord = pt.geometry.coordinates;
-  const aheadDist = Math.min(dist + 50, ld.routeLength);
+
+  let routeDiff = sf[sf.length-1] - sf[0];
+  let physicalDirectionForwards = (routeDiff > 0) ? (trainDirection === 'down') : (trainDirection === 'up');
+  
+  let aheadDist = dist + (physicalDirectionForwards ? 20 : -20);
+  aheadDist = Math.max(0, Math.min(aheadDist, ld.routeLength));
+  let baseDist = dist;
+  if (aheadDist === dist) {
+    baseDist = dist + (physicalDirectionForwards ? -1 : 1);
+  }
+
+  const ptBase = turf.along(ld.routeLine, baseDist, { units: "meters" });
   const ptAhead = turf.along(ld.routeLine, aheadDist, { units: "meters" });
 
-  return { lng: coord[0], lat: coord[1], bearing: geoBearing(coord, ptAhead.geometry.coordinates) };
+  return { lng: coord[0], lat: coord[1], bearing: geoBearing(ptBase.geometry.coordinates, ptAhead.geometry.coordinates) };
 }
 
 // Compute ALL visible rake positions for one line
@@ -264,7 +275,7 @@ function computeLineRakes(lineName, nodes) {
     if (rakeTime < 0) { results.push(null); continue; } // Not yet departed
 
     const pos = getRakePositionInCycle(rakeTime, nodes);
-    const mapPos = fractionToMapPos(lineName, pos.fraction);
+    const mapPos = fractionToMapPos(lineName, pos.fraction, pos.direction);
     if (mapPos) {
       results.push({ ...mapPos, state: pos.state, direction: pos.direction, rakeIdx: r });
     } else {
@@ -428,7 +439,7 @@ async function init() {
   await initSchedules();
   const { orangeSchedule, aquaSchedule } = await import('./metro_routing.js');
   for (const s of [...orangeSchedule, ...aquaSchedule]) {
-    stationCoords[s.name] = { lng: s.lng, lat: s.lat };
+    stationCoords[s.timetableName] = { lng: s.lng, lat: s.lat };
   }
   console.log("[metro3d] Station coords loaded:", Object.keys(stationCoords).length);
 
