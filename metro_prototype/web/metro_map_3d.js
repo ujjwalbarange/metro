@@ -254,7 +254,7 @@ function getTrainCoaches(lineName, fraction, trainDirection) {
   if (z >= 18) scale = 3;
   else if (z > 12) scale = 60 - ((z - 12) / 6) * 57;
   // By dividing spacing relative to the physical scale ratio, tracking meters stay mapped.
-  const COACH_SPACING = 0.68 * scale; 
+  const COACH_SPACING = 1.36 * scale; 
   
   const dist1 = centerDist + (physicalForward ? COACH_SPACING : -COACH_SPACING);
   const dist2 = centerDist;
@@ -373,7 +373,7 @@ function computeAbsoluteTrips(lineName) {
     
     if (pos) {
       const coaches = getTrainCoaches(lineName, pos.fraction, trip.direction);
-      if (coaches) results.push({ coaches, state: pos.state, direction: trip.direction, rakeIdx: trip.id });
+      if (coaches) results.push({ coaches, state: pos.state, direction: trip.direction, rakeIdx: trip.id, lineName });
     }
   }
   return results;
@@ -398,7 +398,7 @@ function computeLineRakes(lineName, nodes) {
     const pos = getRakePositionInCycle(rakeTime, nodes);
     const coaches = getTrainCoaches(lineName, pos.fraction, pos.direction);
     if (coaches) {
-      results.push({ coaches, state: pos.state, direction: pos.direction, rakeIdx: r });
+      results.push({ coaches, state: pos.state, direction: pos.direction, rakeIdx: r, lineName });
     } else {
       results.push(null);
     }
@@ -489,9 +489,17 @@ const trainLayer = {
     let rendered = 0;
     this._renderer.resetState();
 
+    window.__activeTrains = [];
+
     for (const rake of allRakes) {
       if (!rake) continue;
       
+      window.__activeTrains.push(rake);
+
+      if (window.__followingTrain && window.__followingTrain.rakeIdx === rake.rakeIdx) {
+         window.__followLngLat = [rake.coaches.c2.lng, rake.coaches.c2.lat];
+      }
+
       // Frustum cull using the center coach
       if (!isInViewport(rake.coaches.c2.lng, rake.coaches.c2.lat, this._map)) continue;
 
@@ -530,6 +538,9 @@ const trainLayer = {
 /* ─── Animation loop ─── */
 window.__metro3d_raf_id = null;
 function animate() {
+  if (window.__followingTrain && window.__followLngLat && map) {
+    map.setCenter(window.__followLngLat);
+  }
   window.__metro3d_raf_id = requestAnimationFrame(animate);
 }
 
@@ -703,6 +714,37 @@ async function init() {
     console.log(`[metro3d]   ${RAKES_PER_LINE} rakes/line, headway: ${headway/60}min`);
     console.log(`[metro3d]   Dwell: ${DWELL_SEC}s, Turnaround: ${TERMINAL_REV_SEC}s`);
     console.log(`[metro3d]   Frustum culling: ON`);
+
+    // Create follow button
+    const oldBtn = document.getElementById('metro-follow-btn');
+    if (oldBtn) oldBtn.remove();
+    const btn = document.createElement('button');
+    btn.id = 'metro-follow-btn';
+    btn.innerText = 'Follow Train';
+    btn.style.cssText = 'position:fixed;bottom:30px;right:20px;z-index:9999;padding:12px 24px;border-radius:12px;background:#ff6d00;color:#fff;border:none;font-weight:bold;cursor:pointer;box-shadow:0 4px 6px rgba(0,0,0,0.3);';
+    document.body.appendChild(btn);
+
+    window.__followingTrain = null;
+
+    btn.onclick = () => {
+      if (window.__followingTrain) {
+        window.__followingTrain = null;
+        btn.innerText = 'Follow Train';
+      } else {
+        if (window.__activeTrains && window.__activeTrains.length > 0) {
+          window.__followingTrain = window.__activeTrains[0];
+          btn.innerText = 'Unfollow';
+        } else {
+          alert("No trains currently running in schedule.");
+        }
+      }
+    };
+
+    map.on('dragstart', () => { 
+      window.__followingTrain = null; 
+      const b = document.getElementById('metro-follow-btn');
+      if (b) b.innerText = "Follow Train";
+    });
   });
 
   // JS bridge for Flutter
