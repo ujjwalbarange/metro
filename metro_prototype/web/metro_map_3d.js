@@ -9,8 +9,10 @@ import {
 } from './metro_routing.js';
 
 const MAPTILER_KEY = "ofctT6j7ruazu5tvqQqU";
-const MTL_URL      = "train-electric-subway-a.mtl";
-const OBJ_URL      = "train-electric-subway-a.obj";
+const MTL_URL_A    = "train-electric-subway-a.mtl";
+const OBJ_URL_A    = "train-electric-subway-a.obj";
+const MTL_URL_B    = "train-electric-subway-b.mtl";
+const OBJ_URL_B    = "train-electric-subway-b.obj";
 const ROUTE_URL    = "assets/data/route.geojson";
 const STATIONS_URL = "assets/data/stations.geojson";
 const CENTER       = [79.0882, 21.1458];
@@ -227,8 +229,8 @@ function resolvePositionInTrip(tripTimeSec, nodes, reversed) {
   return { fraction: reversed ? 0 : 1, direction: reversed ? 'up' : 'down', state: 'dwell' };
 }
 
-// Convert a station-based fraction to map lng/lat using snapped route fractions
-function fractionToMapPos(lineName, fraction, trainDirection) {
+// Calculate the exact Map positions (lng, lat, bearing) of all 3 coaches
+function getTrainCoaches(lineName, fraction, trainDirection) {
   const ld = lineData[lineName];
   if (!ld || !ld.stationFracs || ld.stationFracs.length < 2) return null;
 
@@ -239,30 +241,149 @@ function fractionToMapPos(lineName, fraction, trainDirection) {
   const hi = Math.min(lo + 1, N);
   const t = idx - lo;
 
+  // Center of train
   const routeFrac = sf[lo] + t * (sf[hi] - sf[lo]);
-  const dist = Math.max(0, Math.min(routeFrac * ld.routeLength, ld.routeLength));
-
-  const pt = turf.along(ld.routeLine, dist, { units: "meters" });
-  const coord = pt.geometry.coordinates;
+  const centerDist = Math.max(0, Math.min(routeFrac * ld.routeLength, ld.routeLength));
 
   let routeDiff = sf[sf.length-1] - sf[0];
-  let physicalDirectionForwards = (routeDiff > 0) ? (trainDirection === 'down') : (trainDirection === 'up');
+  let physicalForward = (routeDiff > 0) ? (trainDirection === 'down') : (trainDirection === 'up');
+
+  // Scale the physical spacing so the coaches never overlap or split as you zoom
+  const z = map.getZoom();
+  let scale = 60;
+  if (z >= 18) scale = 3;
+  else if (z > 12) scale = 60 - ((z - 12) / 6) * 57;
+  // By dividing spacing relative to the physical scale ratio, tracking meters stay mapped.
+  const COACH_SPACING = 0.68 * scale; 
   
-  let aheadDist = dist + (physicalDirectionForwards ? 20 : -20);
-  aheadDist = Math.max(0, Math.min(aheadDist, ld.routeLength));
-  let baseDist = dist;
-  if (aheadDist === dist) {
-    baseDist = dist + (physicalDirectionForwards ? -1 : 1);
+  const dist1 = centerDist + (physicalForward ? COACH_SPACING : -COACH_SPACING);
+  const dist2 = centerDist;
+  const dist3 = centerDist + (physicalForward ? -COACH_SPACING : COACH_SPACING);
+
+  const getPosAndBearing = (d) => {
+     let clamped = Math.max(0, Math.min(d, ld.routeLength));
+     const c = turf.along(ld.routeLine, clamped, { units: "meters" }).geometry.coordinates;
+     let ahead = clamped + (physicalForward ? 4 : -4);
+     ahead = Math.max(0, Math.min(ahead, ld.routeLength));
+     let base = clamped;
+     if (ahead === clamped) base = clamped + (physicalForward ? -1 : 1);
+     
+     const cBase = turf.along(ld.routeLine, base, { units: "meters" }).geometry.coordinates;
+     const cAhead = turf.along(ld.routeLine, ahead, { units: "meters" }).geometry.coordinates;
+     return { lng: c[0], lat: c[1], bearing: geoBearing(cBase, cAhead) };
+  };
+
+  return {
+    c1: getPosAndBearing(dist1),
+    c2: getPosAndBearing(dist2),
+    c3: getPosAndBearing(dist3)
+  };
+}
+
+let absoluteTrips = [];
+async function parseRawSchedule() {
+  try {
+    const resp = await fetch('raw_schedule.csv');
+    if (!resp.ok) return;
+    const text = await resp.text();
+    const lines = text.split('\n').map(l => l.trim().split(','));
+    const tripMap = {};
+    let i = 0;
+    while (i < lines.length) {
+      if (lines[i].length < 4 || (!lines[i][0] && !lines[i][3])) { i++; continue; }
+      
+      const stnUp = lines[i][0].replace(/station/i, '').trim();
+      const stnDown = lines[i][3].replace(/station/i, '').trim();
+      i += 2;
+      
+      while (i < lines.length && (lines[i][0] !== '' || lines[i][3] !== '')) {
+        const row = lines[i];
+        if (row[0] && row[1]) {
+          const id = 'UP_' + row[0].trim();
+          const t = parseTime(row[1]);
+          if (!tripMap[id]) tripMap[id] = { id, direction: 'up', waypoints: [] };
+          tripMap[id].waypoints.push({ station: stnUp, timeSec: t });
+        }
+        if (row[3] && row[4]) {
+          const id = 'DOWN_' + row[3].trim();
+          const t = parseTime(row[4]);
+          if (!tripMap[id]) tripMap[id] = { id, direction: 'down', waypoints: [] };
+          tripMap[id].waypoints.push({ station: stnDown, timeSec: t });
+        }
+        i++;
+      }
+    }
+    absoluteTrips = Object.values(tripMap);
+    absoluteTrips.forEach(t => t.waypoints.sort((a,b) => a.timeSec - b.timeSec));
+    console.log(`[metro3d] Parsed ${absoluteTrips.length} absolute trips from CSV`);
+  } catch (e) {
+    console.warn("Failed to parse raw_schedule:", e);
   }
+}
 
-  const ptBase = turf.along(ld.routeLine, baseDist, { units: "meters" });
-  const ptAhead = turf.along(ld.routeLine, aheadDist, { units: "meters" });
+function parseTime(tStr) {
+  if (!tStr) return 0;
+  const parts = tStr.split(':').map(Number);
+  return (parts[0] * 3600) + (parts[1] * 60) + (parts[2] || 0);
+}
 
-  return { lng: coord[0], lat: coord[1], bearing: geoBearing(ptBase.geometry.coordinates, ptAhead.geometry.coordinates) };
+function getStationFraction(lineName, stnName) {
+  const nodes = lineName === "orange" ? ORANGE_NODES : AQUA_NODES;
+  const idx = nodes.findIndex(n => n.name === stnName);
+  if (idx === -1) return null;
+  return idx / (nodes.length - 1);
+}
+
+function computeAbsoluteTrips(lineName) {
+  const now = new Date();
+  const currentSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds() + now.getMilliseconds() / 1000;
+  const results = [];
+  
+  for (let i = 0; i < absoluteTrips.length; i++) {
+    const trip = absoluteTrips[i];
+    const wps = trip.waypoints;
+    if (wps.length < 2) continue;
+    
+    // Use first arrival time as start time
+    const startTime = wps[0].timeSec;
+    const endTime = wps[wps.length - 1].timeSec + DWELL_SEC;
+    if (currentSec < startTime || currentSec > endTime) continue; 
+    
+    let pos = null;
+    for (let j = 0; j < wps.length; j++) {
+      if (currentSec >= wps[j].timeSec && currentSec <= wps[j].timeSec + DWELL_SEC) {
+        const frac = getStationFraction(lineName, wps[j].station);
+        if (frac !== null) pos = { fraction: frac, state: 'dwell' };
+        break;
+      }
+      if (j < wps.length - 1) {
+        const leaveTime = wps[j].timeSec + DWELL_SEC;
+        const arriveTime = wps[j+1].timeSec;
+        if (currentSec > leaveTime && currentSec < arriveTime) {
+          const progress = (currentSec - leaveTime) / (arriveTime - leaveTime);
+          const f1 = getStationFraction(lineName, wps[j].station);
+          const f2 = getStationFraction(lineName, wps[j+1].station);
+          if (f1 !== null && f2 !== null) {
+            pos = { fraction: f1 + progress * (f2 - f1), state: 'moving' };
+          }
+          break;
+        }
+      }
+    }
+    
+    if (pos) {
+      const coaches = getTrainCoaches(lineName, pos.fraction, trip.direction);
+      if (coaches) results.push({ coaches, state: pos.state, direction: trip.direction, rakeIdx: trip.id });
+    }
+  }
+  return results;
 }
 
 // Compute ALL visible rake positions for one line
 function computeLineRakes(lineName, nodes) {
+  if (lineName === "orange" && absoluteTrips.length > 0) {
+    return computeAbsoluteTrips(lineName);
+  }
   const elapsed = getServiceElapsedSec();
   if (elapsed < 0) return []; // Before 06:00, no service
 
@@ -275,9 +396,9 @@ function computeLineRakes(lineName, nodes) {
     if (rakeTime < 0) { results.push(null); continue; } // Not yet departed
 
     const pos = getRakePositionInCycle(rakeTime, nodes);
-    const mapPos = fractionToMapPos(lineName, pos.fraction, pos.direction);
-    if (mapPos) {
-      results.push({ ...mapPos, state: pos.state, direction: pos.direction, rakeIdx: r });
+    const coaches = getTrainCoaches(lineName, pos.fraction, pos.direction);
+    if (coaches) {
+      results.push({ coaches, state: pos.state, direction: pos.direction, rakeIdx: r });
     } else {
       results.push(null);
     }
@@ -297,7 +418,7 @@ function isInViewport(lng, lat, map) {
 /* ─── Three.js custom layer ─── */
 const trainLayer = {
   id: "3d-train", type: "custom", renderingMode: "3d",
-  _model: null, _camera: null, _scene: null, _renderer: null, _map: null,
+  _modelA: null, _modelB: null, _camera: null, _scene: null, _renderer: null, _map: null,
 
   onAdd(map, gl) {
     this._map = map;
@@ -311,11 +432,11 @@ const trainLayer = {
     fill.position.set(-2, 0.5, -1); this._scene.add(fill);
 
     const mtlLoader = new MTLLoader();
-    mtlLoader.load(MTL_URL, (materials) => {
+    mtlLoader.load(MTL_URL_A, (materials) => {
       materials.preload();
       const objLoader = new OBJLoader();
       objLoader.setMaterials(materials);
-      objLoader.load(OBJ_URL, (object) => {
+      objLoader.load(OBJ_URL_A, (object) => {
         object.rotation.x = Math.PI / 2;
         object.traverse((child) => {
           if (child.isMesh && child.material) {
@@ -323,10 +444,30 @@ const trainLayer = {
             child.material.transparent = false;
           }
         });
-        this._model = object;
-        this._scene.add(this._model);
-        console.log("[metro3d] ✓ OBJ model loaded");
-      }, undefined, (err) => console.error("[metro3d] ✗ OBJ error:", err));
+        this._modelA = object;
+        this._modelA.visible = false;
+        this._scene.add(this._modelA);
+        console.log("[metro3d] ✓ OBJ model A loaded");
+      });
+    });
+
+    mtlLoader.load(MTL_URL_B, (materials) => {
+      materials.preload();
+      const objLoader = new OBJLoader();
+      objLoader.setMaterials(materials);
+      objLoader.load(OBJ_URL_B, (object) => {
+        object.rotation.x = Math.PI / 2;
+        object.traverse((child) => {
+          if (child.isMesh && child.material) {
+            child.material.side = THREE.BackSide;
+            child.material.transparent = false;
+          }
+        });
+        this._modelB = object;
+        this._modelB.visible = false;
+        this._scene.add(this._modelB);
+        console.log("[metro3d] ✓ OBJ model B loaded");
+      });
     });
 
     this._renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl, antialias: true });
@@ -334,32 +475,53 @@ const trainLayer = {
   },
 
   render(gl, matrix) {
-    if (!this._model) return;
+    if (!this._modelA || !this._modelB) return;
 
     const z = this._map.getZoom();
     let scale = 60;
     if (z >= 18) scale = 3;
     else if (z > 12) scale = 60 - ((z - 12) / 6) * 57;
 
-    // Compute all rake positions (real-time)
     const orangeRakes = lineData.orange ? computeLineRakes("orange", ORANGE_NODES) : [];
     const aquaRakes   = lineData.aqua   ? computeLineRakes("aqua", AQUA_NODES)     : [];
     const allRakes = [...orangeRakes, ...aquaRakes];
 
     let rendered = 0;
-    for (const pos of allRakes) {
-      if (!pos) continue;
+    this._renderer.resetState();
 
-      // ── Frustum culling: skip if off-screen ──
-      if (!isInViewport(pos.lng, pos.lat, this._map)) continue;
+    for (const rake of allRakes) {
+      if (!rake) continue;
+      
+      // Frustum cull using the center coach
+      if (!isInViewport(rake.coaches.c2.lng, rake.coaches.c2.lat, this._map)) continue;
 
-      const mm  = makeModelMatrix(pos.lng, pos.lat, 0, pos.bearing, scale);
-      const mvp = mat4Mul(matrix, mm);
-      this._camera.projectionMatrix = new THREE.Matrix4().fromArray(mvp);
-      this._renderer.resetState();
+      // 1. Coach 1 (Front: Model A facing forward)
+      this._modelA.visible = true;
+      this._modelB.visible = false;
+      const mm1  = makeModelMatrix(rake.coaches.c1.lng, rake.coaches.c1.lat, 0, rake.coaches.c1.bearing, scale);
+      this._camera.projectionMatrix = new THREE.Matrix4().fromArray(mat4Mul(matrix, mm1));
       this._renderer.render(this._scene, this._camera);
-      rendered++;
+
+      // 2. Coach 2 (Middle: Model B)
+      this._modelA.visible = false;
+      this._modelB.visible = true;
+      const mm2  = makeModelMatrix(rake.coaches.c2.lng, rake.coaches.c2.lat, 0, rake.coaches.c2.bearing, scale);
+      this._camera.projectionMatrix = new THREE.Matrix4().fromArray(mat4Mul(matrix, mm2));
+      this._renderer.render(this._scene, this._camera);
+
+      // 3. Coach 3 (Rear: Model A rotated 180 degrees)
+      this._modelA.visible = true;
+      this._modelB.visible = false;
+      const mm3  = makeModelMatrix(rake.coaches.c3.lng, rake.coaches.c3.lat, 0, rake.coaches.c3.bearing + Math.PI, scale);
+      this._camera.projectionMatrix = new THREE.Matrix4().fromArray(mat4Mul(matrix, mm3));
+      this._renderer.render(this._scene, this._camera);
+
+      rendered += 3;
     }
+
+    // Hide models so they don't render randomly if MapLibre does something else
+    this._modelA.visible = false;
+    this._modelB.visible = false;
 
     this._map.triggerRepaint();
   },
@@ -434,6 +596,9 @@ async function init() {
     });
   };
   disableFlutter(); setTimeout(disableFlutter, 1000); setTimeout(disableFlutter, 3000);
+
+  // Parse newly provided CSV data if present
+  await parseRawSchedule();
 
   // Init fuzzy-matched schedules
   await initSchedules();
