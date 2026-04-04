@@ -254,7 +254,7 @@ function getTrainCoaches(lineName, fraction, trainDirection) {
   if (z >= 18) scale = 3;
   else if (z > 12) scale = 60 - ((z - 12) / 6) * 57;
   // By dividing spacing relative to the physical scale ratio, tracking meters stay mapped.
-  const COACH_SPACING = 1.36 * scale; 
+  const COACH_SPACING = 4.86 * scale; 
   
   const dist1 = centerDist + (physicalForward ? COACH_SPACING : -COACH_SPACING);
   const dist2 = centerDist;
@@ -745,6 +745,32 @@ async function init() {
       const b = document.getElementById('metro-follow-btn');
       if (b) b.innerText = "Follow Train";
     });
+
+    // Click train to follow
+    map.on('click', (e) => {
+      if (!window.__activeTrains) return;
+
+      const clickPt = turf.point([e.lngLat.lng, e.lngLat.lat]);
+      let closestTrain = null;
+      let minDistance = Infinity;
+
+      for (const rake of window.__activeTrains) {
+        const trainPt = turf.point([rake.coaches.c2.lng, rake.coaches.c2.lat]);
+        const dist = turf.distance(clickPt, trainPt, { units: 'meters' });
+        
+        if (dist < 60 && dist < minDistance) { // Click within 60 meters
+          minDistance = dist;
+          closestTrain = rake;
+        }
+      }
+
+      if (closestTrain) {
+        window.__followingTrain = closestTrain;
+        const b = document.getElementById('metro-follow-btn');
+        if (b) b.innerText = 'Unfollow';
+      }
+    });
+
   });
 
   // JS bridge for Flutter
